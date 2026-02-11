@@ -9,7 +9,7 @@ const PublicEnvSchema = z.object({
 const ServerEnvSchema = PublicEnvSchema.extend({
   OPENAI_API_KEY: z.string().min(1),
   OPENAI_MODEL: z.string().min(1).default("gpt-4.1-mini"),
-  OPENAI_MAX_INPUT_CHARS: z.coerce.number().int().min(10000).max(500000).default(120000)
+  OPENAI_MAX_INPUT_CHARS: z.coerce.number().int().min(10000).max(500000).default(180000)
 });
 
 let cachedPublicEnv: z.infer<typeof PublicEnvSchema> | null = null;
@@ -35,7 +35,7 @@ export function getServerEnv() {
       NEXT_PUBLIC_TEST_DOCS_DRIVE_URL: process.env.NEXT_PUBLIC_TEST_DOCS_DRIVE_URL || undefined,
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,
       OPENAI_MODEL: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
-      OPENAI_MAX_INPUT_CHARS: process.env.OPENAI_MAX_INPUT_CHARS ?? 120000
+      OPENAI_MAX_INPUT_CHARS: process.env.OPENAI_MAX_INPUT_CHARS ?? 180000
     });
   }
 
