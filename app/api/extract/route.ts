@@ -15,6 +15,8 @@ const inputSchema = z.object({
   pastedText: z.string().nullable()
 });
 
+let pdfWorkerPrepared = false;
+
 function cleanJson(raw: string) {
   const trimmed = raw.trim();
   if (trimmed.startsWith("```")) {
@@ -25,11 +27,28 @@ function cleanJson(raw: string) {
 
 async function parsePdfText(data: Uint8Array) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  // Server runtimes (incl. Vercel) are more stable with fake worker mode.
-  // This avoids worker path/resolution issues in bundled deployments.
+
+  // In serverless runtimes, pdfjs fake-worker bootstrap can fail if it tries
+  // to import a relative `./pdf.worker.mjs` chunk that does not exist.
+  // Preload the worker module once and expose it in `globalThis.pdfjsWorker`.
+  if (!pdfWorkerPrepared) {
+    try {
+      if (!(globalThis as any).pdfjsWorker?.WorkerMessageHandler) {
+        const workerModule = await import("pdfjs-dist/legacy/build/pdf.worker.mjs");
+        (globalThis as any).pdfjsWorker = workerModule;
+      }
+
+      pdfjs.GlobalWorkerOptions.workerSrc = "pdfjs-dist/legacy/build/pdf.worker.mjs";
+      pdfWorkerPrepared = true;
+    } catch (workerError) {
+      console.warn("pdf worker bootstrap warning", workerError);
+      // Keep going; parsing may still work in environments that can resolve
+      // the worker without preloading.
+    }
+  }
+
   const loadingTask = (pdfjs as any).getDocument({
     data,
-    disableWorker: true,
     useWorkerFetch: false,
     isEvalSupported: false,
     disableFontFace: true,
