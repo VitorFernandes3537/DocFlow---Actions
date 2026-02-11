@@ -98,11 +98,13 @@ async function parsePdfText(data: Uint8Array) {
   return chunks.join("\n\n").trim();
 }
 
-async function parsePdfTextWithRetry(data: Uint8Array, attempts = 2) {
+async function parsePdfTextWithRetry(file: File, attempts = 2) {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
+      // Use fresh bytes on each attempt because pdfjs may transfer/detach buffers.
+      const data = new Uint8Array(await file.arrayBuffer());
       const text = await parsePdfText(data);
       if (text.length > 0) {
         return text;
@@ -203,10 +205,8 @@ export async function POST(request: Request) {
     if (file instanceof File && file.size > 0) {
       sourceType = "pdf";
 
-      const pdfBytes = new Uint8Array(await file.arrayBuffer());
-
       try {
-        parsedPdfText = await parsePdfTextWithRetry(pdfBytes, 2);
+        parsedPdfText = await parsePdfTextWithRetry(file, 2);
       } catch (parseError) {
         console.error("pdf parse error", parseError);
       }
@@ -230,7 +230,7 @@ export async function POST(request: Request) {
 
       const { error: uploadError } = await supabase.storage
         .from("documents")
-        .upload(storagePath, new Blob([pdfBytes], { type: file.type || "application/pdf" }), {
+        .upload(storagePath, file, {
           cacheControl: "3600",
           contentType: file.type || "application/pdf",
           upsert: false
