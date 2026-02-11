@@ -23,22 +23,19 @@ function cleanJson(raw: string) {
   return trimmed;
 }
 
-async function parsePdfText(file: File) {
-  const arrayBuffer = await file.arrayBuffer();
-  const data = new Uint8Array(arrayBuffer);
-
+async function parsePdfText(data: Uint8Array) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  // In Next.js server runtime, the default relative worker path can point to
-  // a missing .next chunk. Force package-resolvable worker path.
-  pdfjs.GlobalWorkerOptions.workerSrc = "pdfjs-dist/legacy/build/pdf.worker.mjs";
-  const loadingTask = pdfjs.getDocument({
+  // Server runtimes (incl. Vercel) are more stable with fake worker mode.
+  // This avoids worker path/resolution issues in bundled deployments.
+  const loadingTask = (pdfjs as any).getDocument({
     data,
+    disableWorker: true,
     useWorkerFetch: false,
     isEvalSupported: false,
     disableFontFace: true,
     stopAtErrors: false,
     verbosity: pdfjs.VerbosityLevel.ERRORS
-  });
+  } as any);
 
   let pdfDocument: Awaited<typeof loadingTask.promise> | null = null;
   const chunks: string[] = [];
@@ -82,12 +79,12 @@ async function parsePdfText(file: File) {
   return chunks.join("\n\n").trim();
 }
 
-async function parsePdfTextWithRetry(file: File, attempts = 2) {
+async function parsePdfTextWithRetry(data: Uint8Array, attempts = 2) {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      const text = await parsePdfText(file);
+      const text = await parsePdfText(data);
       if (text.length > 0) {
         return text;
       }
@@ -187,24 +184,10 @@ export async function POST(request: Request) {
     if (file instanceof File && file.size > 0) {
       sourceType = "pdf";
 
-      const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
-      storagePath = `${user.id}/${crypto.randomUUID()}-${safeFileName}`;
-
-      const { error: uploadError } = await supabase.storage
-        .from("documents")
-        .upload(storagePath, file, {
-          cacheControl: "3600",
-          contentType: file.type || "application/pdf",
-          upsert: false
-        });
-
-      if (uploadError) {
-        console.error("storage upload error", uploadError);
-        return NextResponse.json({ error: "Falha no upload do PDF" }, { status: 500 });
-      }
+      const pdfBytes = new Uint8Array(await file.arrayBuffer());
 
       try {
-        parsedPdfText = await parsePdfTextWithRetry(file, 2);
+        parsedPdfText = await parsePdfTextWithRetry(pdfBytes, 2);
       } catch (parseError) {
         console.error("pdf parse error", parseError);
       }
@@ -221,6 +204,22 @@ export async function POST(request: Request) {
           },
           { status: 422 }
         );
+      }
+
+      const safeFileName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      storagePath = `${user.id}/${crypto.randomUUID()}-${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("documents")
+        .upload(storagePath, new Blob([pdfBytes], { type: file.type || "application/pdf" }), {
+          cacheControl: "3600",
+          contentType: file.type || "application/pdf",
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error("storage upload error", uploadError);
+        return NextResponse.json({ error: "Falha no upload do PDF" }, { status: 500 });
       }
     }
 
