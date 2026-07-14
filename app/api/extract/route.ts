@@ -98,7 +98,7 @@ async function parsePdfText(data: Uint8Array) {
   return chunks.join("\n\n").trim();
 }
 
-async function parsePdfTextWithRetry(file: File, attempts = 2) {
+async function parsePdfTextWithRetry(file: Blob, attempts = 2) {
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -187,6 +187,8 @@ export async function POST(request: Request) {
     const title = String(formData.get("title") ?? "").trim();
     const baseDateRaw = String(formData.get("base_date") ?? "").trim();
     const pastedTextRaw = String(formData.get("pasted_text") ?? "").trim();
+    const storagePathInput = String(formData.get("storage_path") ?? "").trim();
+    const fileNameInput = String(formData.get("file_name") ?? "").trim();
     const file = formData.get("file");
 
     const validatedInput = inputSchema.parse({
@@ -202,7 +204,49 @@ export async function POST(request: Request) {
     let docText = validatedInput.pastedText ?? "";
     let parsedPdfText = "";
 
-    if (file instanceof File && file.size > 0) {
+    if (storagePathInput) {
+      // Fluxo padrão: o browser já subiu o PDF direto pro Supabase Storage
+      // (evita o limite de 4,5 MB do corpo das funções serverless da Vercel).
+      sourceType = "pdf";
+
+      if (!storagePathInput.startsWith(`${user.id}/`)) {
+        return NextResponse.json({ error: "Caminho de arquivo invalido." }, { status: 400 });
+      }
+
+      const { data: fileBlob, error: downloadError } = await supabase.storage
+        .from("documents")
+        .download(storagePathInput);
+
+      if (downloadError || !fileBlob) {
+        console.error("storage download error", downloadError);
+        return NextResponse.json(
+          { error: "Falha ao ler o PDF do armazenamento." },
+          { status: 500 }
+        );
+      }
+
+      storagePath = storagePathInput;
+
+      try {
+        parsedPdfText = await parsePdfTextWithRetry(fileBlob, 2);
+      } catch (parseError) {
+        console.error("pdf parse error", parseError);
+      }
+
+      if (hasSufficientText(parsedPdfText)) {
+        docText = parsedPdfText;
+      } else if (!validatedInput.pastedText) {
+        const extractedChars = parsedPdfText.trim().length;
+        return NextResponse.json(
+          {
+            error: "PDF sem texto util. Use fallback de texto.",
+            needsTextFallback: true,
+            extractedChars
+          },
+          { status: 422 }
+        );
+      }
+    } else if (file instanceof File && file.size > 0) {
       sourceType = "pdf";
 
       try {

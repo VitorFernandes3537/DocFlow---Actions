@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 type Stage = {
   limit: number;
@@ -130,17 +131,68 @@ export function NewDocumentForm() {
     setError(null);
 
     const formData = new FormData(event.currentTarget);
+    const file = formData.get("file");
+    const hasFile = file instanceof File && file.size > 0;
     const estimate = estimateDurationSeconds(formData);
 
     setLoading(true);
     startProgressTicker(estimate);
 
     try {
+      // Enviamos à API SEM o binário do PDF. O arquivo grande vai direto do
+      // browser para o Supabase Storage, evitando o limite de 4,5 MB do corpo
+      // de requisição das funções serverless da Vercel.
+      const payloadForm = new FormData();
+      payloadForm.set("title", String(formData.get("title") ?? ""));
+      payloadForm.set("base_date", String(formData.get("base_date") ?? ""));
+      payloadForm.set("pasted_text", String(formData.get("pasted_text") ?? ""));
+
+      if (hasFile) {
+        const supabase = createBrowserSupabaseClient();
+        const {
+          data: { user },
+          error: userError
+        } = await supabase.auth.getUser();
+
+        if (userError || !user) {
+          throw new Error("Sessão expirada. Faça login novamente.");
+        }
+
+        const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+        const storagePath = `${user.id}/${crypto.randomUUID()}-${safeName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("documents")
+          .upload(storagePath, file, {
+            cacheControl: "3600",
+            contentType: file.type || "application/pdf",
+            upsert: false
+          });
+
+        if (uploadError) {
+          throw new Error("Falha no upload do PDF para o armazenamento.");
+        }
+
+        payloadForm.set("storage_path", storagePath);
+        payloadForm.set("file_name", file.name);
+      }
+
       const response = await fetch("/api/extract", {
         method: "POST",
-        body: formData
+        body: payloadForm
       });
-      const payload = await response.json();
+
+      const rawResponse = await response.text();
+      let payload: {
+        documentId?: string;
+        error?: string;
+        needsTextFallback?: boolean;
+      } = {};
+      try {
+        payload = rawResponse ? JSON.parse(rawResponse) : {};
+      } catch {
+        payload = { error: rawResponse.slice(0, 200) || "Resposta inválida do servidor." };
+      }
 
       if (!response.ok) {
         if (payload?.needsTextFallback) {
